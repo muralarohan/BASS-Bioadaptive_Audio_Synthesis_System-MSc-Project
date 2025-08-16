@@ -1,0 +1,38 @@
+# Python
+__pycache__/
+*.pyc
+.venv/
+venv/
+.env
+
+# IDE
+.vscode/
+.idea/
+
+# Outputs & artifacts
+outputs/
+*.wav
+*.mp3
+*.flac
+*.m4a
+*.ogg
+*.csv
+logs/
+wandb/
+.cache/
+.checkpoints/
+
+# Adapter / model weights (keep folders + READMEs)
+*.pt
+*.pth
+*.bin
+*.ckpt
+*.safetensors
+adapters/*/merged_state_dict.pt
+!adapters/
+!adapters/*/
+!adapters/*/README.md
+
+# Misc
+.DS_Store
+Thumbs.db
