@@ -1,0 +1,11 @@
+paths:
+  adapters:
+    calm: adapters/calm/merged_state_dict.pt
+    neutral: adapters/neutral/merged_state_dict.pt
+  prompts:
+    json: prompts/emotion_prompt_bank.json
+    csv:  prompts/emotion_prompt_bank.csv
+  outputs:
+    audio: outputs/audio
+    logs:  outputs/logs
+    metrics: outputs/metrics.csv

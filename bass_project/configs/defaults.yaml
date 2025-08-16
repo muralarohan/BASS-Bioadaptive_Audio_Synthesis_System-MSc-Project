@@ -1,0 +1,35 @@
+sampler:
+  duration_sec: 20            # 20–30 for live; 6–8 for tests
+  temperature: 0.95
+  top_k: 150
+  top_p: 0.95
+  cfg_coef: 1.6
+  use_sampling: true
+  seed: 4242
+
+postfx:
+  highpass_hz: 120
+  lowpass_hz: 10000
+  limiter_drive: 1.6
+  peak_target: 0.90
+
+adapters:
+  enabled: true
+  name: neutral               # neutral | calm | base
+  alpha: 0.0125               # sweet spot 0.01–0.015
+
+realtime:
+  segment_sec: 20
+  crossfade_sec: 1.5
+  lookahead_segments: 2
+
+emotion_rules:
+  stress_delta_bpm: 15        # baseline +15
+  under_delta_bpm: -10        # baseline –10
+  window_sec: 10
+  sustain_sec: 30
+
+logging:
+  metrics_csv: outputs/metrics.csv
+  audio_dir: outputs/audio
+  logs_dir: outputs/logs
