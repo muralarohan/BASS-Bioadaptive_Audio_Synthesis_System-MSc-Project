@@ -4,6 +4,11 @@ import os
 from pathlib import Path
 from datetime import datetime
 
+#--- ensure project root on sys.path (so `import src.*` works when running from /ui) ---
+ROOT = Path(__file__).resolve().parents[1]  # .../bass_project
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
+
 # --------- small helpers ---------
 def _safe_load_yaml(path):
     """Load YAML if available; else return {} and print a hint."""
@@ -264,11 +269,13 @@ def main(argv=None):
 
     # Attempt generation via engine (optional: implemented in next step)
     try:
-        from src.gen.engine import render_one_clip  # to be implemented next
+        from src.gen.engine import render_one_clip
     except Exception as e:
-        print("[INFO] Generation engine not available yet (src/gen/engine.py).")
-        print("       Next step: implement render_one_clip(...) and metrics logging.")
-        sys.exit(0)
+        import traceback
+        print("[ERROR] Failed to import generation engine:", e)
+        traceback.print_exc()
+        sys.exit(1)
+
 
     # If engine is present, run it
     try:
