@@ -1,7 +1,6 @@
 # ui/cli.py
 import argparse
 import sys
-import os
 from pathlib import Path
 from datetime import datetime
 
@@ -102,13 +101,17 @@ def build_parser():
         prog="BASS CLI",
         description="Run BASS music generation with optional LoRA adapter blending."
     )
-    # Required (can be overridden by --prompt-id/--state)
+    # Keyword (optional if using prompt bank / HR-derived state)
     p.add_argument("--keyword", type=str, required=False, help="MusicGen text prompt or keyword.")
 
     # Use prompt bank
     p.add_argument("--prompt-id", type=int, help="Pick a prompt from the bank by ID.")
     p.add_argument("--state", type=str, help="Pick a prompt by state (e.g., calm, neutral, stress, under).")
     p.add_argument("--list-prompts", action="store_true", help="List prompt bank entries and exit.")
+
+    # HR-derived state (optional)
+    p.add_argument("--baseline-bpm", type=float, help="Baseline heart rate (BPM).")
+    p.add_argument("--hr-bpm", type=float, help="Current heart rate (BPM). If set with --baseline-bpm, derives --state.")
 
     # Adapter selection
     p.add_argument("--only", choices=["base", "neutral", "calm"], help="Select which path to run.")
@@ -234,6 +237,25 @@ def main(argv=None):
     audio_dir.mkdir(parents=True, exist_ok=True)
     logs_dir.mkdir(parents=True, exist_ok=True)
     metrics_csv.parent.mkdir(parents=True, exist_ok=True)
+
+    # If --state not provided, derive from baseline/hr if both present
+    derived_state = None
+    if not getattr(args, "state", None) and args.baseline_bpm is not None and args.hr_bpm is not None:
+        try:
+            from src.control.state_mapper import HRStateMapper, HRRules
+            er = cfg.get("emotion_rules", {})
+            rules = HRRules(
+                stress_delta_bpm=int(er.get("stress_delta_bpm", 15)),
+                under_delta_bpm=int(er.get("under_delta_bpm", -10)),
+                window_sec=int(er.get("window_sec", 10)),
+                sustain_sec=int(er.get("sustain_sec", 30)),
+            )
+            mapper = HRStateMapper(rules)
+            derived_state = mapper.map_bpm(args.baseline_bpm, args.hr_bpm)
+            print(f"[INFO] HR-derived state: baseline={args.baseline_bpm} bpm, current={args.hr_bpm} bpm → state={derived_state}")
+            args.state = derived_state
+        except Exception as e:
+            print(f"[WARN] Could not derive state from HR inputs: {e}")
 
     # Prompt bank usage (list or select) happens BEFORE requiring --keyword
     if args.list_prompts or args.prompt_id is not None or args.state:
