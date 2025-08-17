@@ -1,13 +1,15 @@
+# ui/cli.py
 import argparse
 import sys
 import os
 from pathlib import Path
 from datetime import datetime
 
-#--- ensure project root on sys.path (so `import src.*` works when running from /ui) ---
+# --- ensure project root on sys.path (so `import src.*` works when running from /ui) ---
 ROOT = Path(__file__).resolve().parents[1]  # .../bass_project
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
+# --------------------------------------------------------------------------------------
 
 # --------- small helpers ---------
 def _safe_load_yaml(path):
@@ -100,8 +102,13 @@ def build_parser():
         prog="BASS CLI",
         description="Run BASS music generation with optional LoRA adapter blending."
     )
-    # Required
-    p.add_argument("--keyword", type=str, required=True, help="MusicGen text prompt or keyword.")
+    # Required (can be overridden by --prompt-id/--state)
+    p.add_argument("--keyword", type=str, required=False, help="MusicGen text prompt or keyword.")
+
+    # Use prompt bank
+    p.add_argument("--prompt-id", type=int, help="Pick a prompt from the bank by ID.")
+    p.add_argument("--state", type=str, help="Pick a prompt by state (e.g., calm, neutral, stress, under).")
+    p.add_argument("--list-prompts", action="store_true", help="List prompt bank entries and exit.")
 
     # Adapter selection
     p.add_argument("--only", choices=["base", "neutral", "calm"], help="Select which path to run.")
@@ -207,7 +214,7 @@ def _resolve_paths(adapter_name, paths_cfg):
     audio_dir = Path(out_map.get("audio", "outputs/audio"))
     metrics_csv = Path(out_map.get("metrics", "outputs/metrics.csv"))
     logs_dir = Path(out_map.get("logs", "outputs/logs"))
-    # Prompts (not required here but validated)
+    # Prompts (used if --prompt-id/--state/--list-prompts)
     prompts = paths_cfg["paths"].get("prompts", {})
     prompt_json = Path(prompts.get("json", "prompts/emotion_prompt_bank.json"))
     prompt_csv = Path(prompts.get("csv", "prompts/emotion_prompt_bank.csv"))
@@ -218,12 +225,9 @@ def main(argv=None):
     args = parser.parse_args(argv)
 
     cfg, paths_cfg = _resolve_config(args)
-    keyword = args.keyword
-    adapter_enabled = cfg["adapters"].get("enabled", True)
-    adapter_name = cfg["adapters"].get("name", "neutral")
-    alpha = float(cfg["adapters"].get("alpha", 0.0125))
 
     # Resolve paths
+    adapter_name = cfg["adapters"].get("name", "neutral")
     adapter_file, audio_dir, metrics_csv, logs_dir, prompt_json, prompt_csv = _resolve_paths(adapter_name, paths_cfg)
 
     # Validate folders
@@ -231,10 +235,47 @@ def main(argv=None):
     logs_dir.mkdir(parents=True, exist_ok=True)
     metrics_csv.parent.mkdir(parents=True, exist_ok=True)
 
-    # Validate prompts presence (at least one of json/csv)
-    if not prompt_json.exists() and not prompt_csv.exists():
-        print(f"[ERROR] Prompt bank not found at {prompt_json} or {prompt_csv}.")
-        sys.exit(2)
+    # Prompt bank usage (list or select) happens BEFORE requiring --keyword
+    if args.list_prompts or args.prompt_id is not None or args.state:
+        # Load bank
+        try:
+            from src.control.prompt_selector import load_prompt_bank, list_prompts, get_prompt_by_id, get_prompt_for_state
+        except Exception as e:
+            print("[ERROR] Failed to import prompt_selector:", e); sys.exit(1)
+
+        if not prompt_json.exists() and not prompt_csv.exists():
+            print(f"[ERROR] Prompt bank not found at {prompt_json} or {prompt_csv}."); sys.exit(2)
+
+        entries = load_prompt_bank(prompt_json, prompt_csv)
+
+        if args.list_prompts:
+            lines = list_prompts(entries)
+            print("Available prompts:")
+            for ln in lines:
+                print(" ", ln)
+            sys.exit(0)
+
+        # Select by ID overrides state
+        if args.prompt_id is not None:
+            try:
+                chosen = get_prompt_by_id(entries, int(args.prompt_id))
+            except Exception as e:
+                print(f"[ERROR] {e}"); sys.exit(2)
+            keyword = chosen["prompt"]
+        elif args.state:
+            chosen = get_prompt_for_state(entries, args.state)
+            keyword = chosen["prompt"]
+        else:
+            keyword = args.keyword  # fallback if something odd happens
+    else:
+        # No bank usage → require keyword
+        if not args.keyword:
+            print("[ERROR] You must pass --keyword or use --prompt-id / --state or --list-prompts.")
+            sys.exit(2)
+        keyword = args.keyword
+
+    adapter_enabled = cfg["adapters"].get("enabled", True)
+    alpha = float(cfg["adapters"].get("alpha", 0.0125))
 
     # Adapter selection rules
     chosen_adapter = "base"
@@ -267,7 +308,7 @@ def main(argv=None):
     print(f"Outputs          : audio_dir={audio_dir}  metrics_csv={metrics_csv}")
     print(f"Target file      : {out_path}")
 
-    # Attempt generation via engine (optional: implemented in next step)
+    # Import generation engine with proper traceback on failure
     try:
         from src.gen.engine import render_one_clip
     except Exception as e:
@@ -276,8 +317,7 @@ def main(argv=None):
         traceback.print_exc()
         sys.exit(1)
 
-
-    # If engine is present, run it
+    # Run generation
     try:
         result = render_one_clip(
             keyword=keyword,
