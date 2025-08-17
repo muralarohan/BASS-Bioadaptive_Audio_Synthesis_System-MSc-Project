@@ -39,25 +39,25 @@ def _equal_power_xfade(a: np.ndarray, b: np.ndarray, overlap: int) -> np.ndarray
     return np.concatenate([a[:-overlap], cross, b[overlap:]]).astype(np.float32)
 
 
-def _choose_adapter_for_state(state: str) -> str:
+def _adapter_for_stage(stage: str) -> str:
     """
-    Adapter policy by musical state:
-      - 'base'    -> base model
+    Map musical stage to adapter name expected by render_one_clip:
+      - 'energy'  -> base (no adapter)
       - 'neutral' -> neutral adapter
       - 'calm'    -> calm adapter
     """
-    s = (state or "").lower()
-    if s == "calm":
-        return "calm"
+    s = (stage or "").lower()
     if s == "neutral":
         return "neutral"
-    return "base"
+    if s == "calm":
+        return "calm"
+    return "base"  # energy uses base model
 
 
 def build_parser():
     p = argparse.ArgumentParser(
         prog="BASS Live",
-        description="Live HR-driven generation loop (Polar Verity Sense). Locked 4-stage schedule."
+        description="Live HR-driven generation loop (Polar Verity Sense). Locked 4-stage schedule (energy/neutral/calm)."
     )
     p.add_argument("--device", type=str, default="Polar Verity Sense",
                    help="BLE name or address of the Polar device.")
@@ -74,9 +74,9 @@ def build_parser():
     p.add_argument("--lookahead", type=int, default=2,
                    help="Planned look-ahead segments (sequential in CPU mode).")
 
-    # Generation / adapters
-    p.add_argument("--alpha", type=float, default=0.0125,
-                   help="Adapter blend alpha.")
+    # Generation / adapters (stage overrides apply at runtime)
+    p.add_argument("--alpha", type=float, default=0.01,
+                   help="Adapter blend alpha (fixed to 0.01 for neutral/calm; energy has no adapter).")
     p.add_argument("--temperature", type=float, default=0.95)
     p.add_argument("--top-k", type=int, default=150)
     p.add_argument("--top-p", type=float, default=0.95)
@@ -101,19 +101,28 @@ def build_parser():
 def _build_locked_schedule(phys_init: str):
     """
     Build the musical stage plan from the initial physiological state.
-    Returns (schedule_id, stages_list) where stages are 'base'|'neutral'|'calm'.
+    Returns (schedule_id, stages_list) where stages are 'energy'|'neutral'|'calm'.
     """
     pi = (phys_init or "").lower()
     if pi == "stress":
         stages = ["neutral", "neutral", "calm", "calm"]
         sid = "stress->N,N,C,C"
     elif pi == "under":
-        stages = ["base", "neutral", "neutral", "calm"]
-        sid = "under->B,N,N,C"
+        stages = ["energy", "neutral", "neutral", "calm"]
+        sid = "under->E,N,N,C"
     else:  # treat anything else as neutral
         stages = ["neutral", "neutral", "calm", "calm"]
         sid = "neutral->N,N,C,C"
     return sid, stages
+
+
+# ---- stage-specific generation tweaks ----
+# These override the baseline args per musical stage.
+STAGE_PARAMS = {
+    "energy":  {"lowpass": 12000, "cfg": 1.7, "temperature": 0.95, "alpha": 0.0},   # no adapter
+    "neutral": {"lowpass": 10000, "cfg": 1.6, "temperature": 0.95, "alpha": 0.01},  # neutral adapter @ 0.01
+    "calm":    {"lowpass": 9500,  "cfg": 1.5, "temperature": 0.92, "alpha": 0.01},  # calm adapter @ 0.01
+}
 
 
 def main(argv=None):
@@ -123,7 +132,7 @@ def main(argv=None):
     metrics_csv = Path(args.metrics_csv); metrics_csv.parent.mkdir(parents=True, exist_ok=True)
     prompt_json = Path(args.prompt_json); prompt_csv = Path(args.prompt_csv)
 
-    # Load prompt bank
+    # Load prompt bank (must include 'state' entries for energy/neutral/calm)
     entries = load_prompt_bank(prompt_json, prompt_csv)
     if not entries:
         print("[ERROR] Prompt bank appears empty."); sys.exit(2)
@@ -168,11 +177,11 @@ def main(argv=None):
             phys_now = mapper.map_bpm(args.baseline_bpm, bpm)
 
             # Choose musical stage from locked plan (hold final stage if more than 4 segments)
-            musical_state = plan[i] if i < len(plan) else plan[-1]
+            stage = plan[i] if i < len(plan) else plan[-1]
 
-            # Prompt by musical state: 'base' | 'neutral' | 'calm'
-            prompt = get_prompt_for_state(entries, musical_state)["prompt"]
-            adapter_name = _choose_adapter_for_state(musical_state)
+            # Stage-specific prompt and adapter
+            prompt = get_prompt_for_state(entries, stage)["prompt"]
+            adapter_name = _adapter_for_stage(stage)
 
             # Adapter path resolution
             adapter_path = None
@@ -181,29 +190,39 @@ def main(argv=None):
             elif adapter_name == "calm":
                 adapter_path = "adapters/calm/merged_state_dict.pt"
 
+            # Stage-specific overrides
+            sp = STAGE_PARAMS[stage]
+            stage_lowpass = int(sp["lowpass"])
+            stage_cfg = float(sp["cfg"])
+            stage_temp = float(sp["temperature"])
+            stage_alpha = float(sp["alpha"])  # 0.01 for adapter stages, 0.0 for energy
+
             slug = prompt.lower().replace(" ", "-")[:48]
-            out_wav = outputs / f"{stamp}_live_seg{i:02d}_{adapter_name}_{slug}_a{args.alpha:.4f}.wav"
+            # Use stage tag (energy/neutral/calm) in filename for clarity
+            out_wav = outputs / f"{stamp}_live_seg{i:02d}_{stage}_{slug}_a{stage_alpha:.4f}.wav"
 
             print(f"\n=== LIVE SEGMENT {i+1}/{total_segments} ===")
             print(f"HR avg bpm  : {bpm:.1f}  (baseline {args.baseline_bpm:.1f}) "
-                  f"phys_now={phys_now} | phys_init={phys_init} | stage={musical_state.upper()}")
-            print(f"Adapter     : {adapter_name}  alpha={args.alpha}")
+                  f"phys_now={phys_now} | phys_init={phys_init} | stage={stage.upper()}")
+            print(f"Adapter     : {adapter_name}  alpha={stage_alpha}")
+            print(f"Sampler     : temp={stage_temp} top_k={args.top_k} top_p={args.top_p} cfg={stage_cfg}")
+            print(f"Filters     : HPF={args.highpass}Hz LPF={stage_lowpass}Hz peak={args.peak}")
             print(f"Prompt      : {prompt}")
             print(f"Out         : {out_wav}")
 
             ok = render_one_clip(
                 keyword=prompt,
-                adapter_name=adapter_name if adapter_name in {"neutral", "calm"} else "base",
+                adapter_name=adapter_name,           # base for energy; neutral/calm otherwise
                 adapter_path=adapter_path,
-                alpha=float(args.alpha if adapter_name in {"neutral", "calm"} else 0.0),
+                alpha=stage_alpha,
                 duration_sec=int(args.segment_sec),
-                temperature=float(args.temperature),
+                temperature=stage_temp,
                 top_k=int(args.top_k),
                 top_p=float(args.top_p),
-                cfg_coef=float(args.cfg),
+                cfg_coef=stage_cfg,
                 seed=int(seed),
                 highpass_hz=int(args.highpass),
-                lowpass_hz=int(args.lowpass),
+                lowpass_hz=stage_lowpass,
                 limiter_drive=1.6,
                 peak_target=float(args.peak),
                 out_wav=str(out_wav),
