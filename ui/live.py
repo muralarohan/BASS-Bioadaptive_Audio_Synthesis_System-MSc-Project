@@ -195,11 +195,17 @@ def main(argv=None):
             print(f"\n[OK] Live session mix written to: {live_out}")
         else:
             print("[WARN] No segments were rendered; nothing to write.")
+
     finally:
         try:
             hr.disconnect()
         except Exception:
             pass
+        try:
+            hr.close()  # stop background loop/thread to avoid 'event loop is closed' warnings
+        except Exception:
+            pass
+
 
 if __name__ == "__main__":
     main()

@@ -5,19 +5,14 @@ import time
 from collections import deque
 from dataclasses import dataclass
 from typing import Optional
+from threading import Thread
 
-# Requires bleak==0.21.1
 from bleak import BleakClient, BleakScanner
 
-# Standard Heart Rate Measurement Characteristic
 HR_CHAR_UUID = "00002a37-0000-1000-8000-00805f9b34fb"
 POLAR_DEFAULT_NAME = "Polar Verity Sense"
 
 def _parse_hr_measurement(data: bytes) -> Optional[int]:
-    """
-    Parse Bluetooth SIG Heart Rate Measurement value.
-    Returns bpm as int, or None if cannot parse.
-    """
     if not data:
         return None
     flags = data[0]
@@ -30,10 +25,7 @@ def _parse_hr_measurement(data: bytes) -> Optional[int]:
         if len(data) < 2:
             return None
         bpm = data[1]
-    # Sanity bounds
-    if 20 <= bpm <= 240:
-        return bpm
-    return None
+    return bpm if 20 <= bpm <= 240 else None
 
 @dataclass
 class HRWindow:
@@ -41,30 +33,38 @@ class HRWindow:
 
 class PolarVeritySenseHR:
     """
-    Simple synchronous wrapper around bleak for reading HR notifications.
-    Use:
-        hr = PolarVeritySenseHR(device="Polar Verity Sense")  # or MAC address
-        hr.connect()
-        bpm = hr.get_bpm(default=baseline)
-        hr.disconnect()
+    Persistent-loop wrapper for Bleak on Windows so HR notifications don't target a closed loop.
     """
     def __init__(self, device: Optional[str] = None, avg_window: HRWindow = HRWindow()):
         self.device_query = device or POLAR_DEFAULT_NAME
         self.avg_window = avg_window
-        self._client: Optional[BleakClient] = None
         self._deque = deque()  # (timestamp, bpm)
-        self._connected = False
 
-    # ---------- Async internals ----------
+        self._client: Optional[BleakClient] = None
+        self._connected: bool = False
+
+        # Dedicated asyncio loop & thread (lazy-started on connect)
+        self._loop: Optional[asyncio.AbstractEventLoop] = None
+        self._thread: Optional[Thread] = None
+
+    # ---------- loop/thread helpers ----------
+    def _ensure_loop(self):
+        if self._loop is not None:
+            return
+        self._loop = asyncio.new_event_loop()
+        self._thread = Thread(target=self._loop.run_forever, daemon=True)
+        self._thread.start()
+
+    def _run(self, coro):
+        # schedule coroutine on the background loop and wait for its result
+        fut = asyncio.run_coroutine_threadsafe(coro, self._loop)
+        return fut.result()
+
+    # ---------- async internals ----------
     async def _a_find_device(self) -> Optional[str]:
-        """
-        Returns address (MAC / BLE address) for the first matching device by name substring or exact address if provided.
-        """
-        dq = self.device_query.strip()
-        # If it looks like an address (has ':'), assume it's an address
+        dq = (self.device_query or "").strip()
         if ":" in dq or dq.count("-") >= 5:
-            return dq
-
+            return dq  # looks like an address
         devices = await BleakScanner.discover(timeout=5.0)
         dq_lower = dq.lower()
         for d in devices:
@@ -79,7 +79,7 @@ class PolarVeritySenseHR:
             return
         now = time.time()
         self._deque.append((now, float(bpm)))
-        # prune old
+        # prune old samples
         cut = now - self.avg_window.seconds
         while self._deque and self._deque[0][0] < cut:
             self._deque.popleft()
@@ -89,7 +89,7 @@ class PolarVeritySenseHR:
             return
         address = await self._a_find_device()
         if not address:
-            raise RuntimeError(f"Polar device '{self.device_query}' not found. Turn it on and try again.")
+            raise RuntimeError(f"Polar device '{self.device_query}' not found. Wake it and retry.")
         self._client = BleakClient(address)
         await self._client.connect()
         await self._client.start_notify(HR_CHAR_UUID, self._on_hr_notify)
@@ -98,6 +98,7 @@ class PolarVeritySenseHR:
     async def _a_disconnect(self):
         if self._client and self._connected:
             try:
+                # Stop notifications before disconnecting to quiesce callbacks
                 await self._client.stop_notify(HR_CHAR_UUID)
             except Exception:
                 pass
@@ -108,17 +109,38 @@ class PolarVeritySenseHR:
         self._connected = False
         self._client = None
 
-    # ---------- Public sync API ----------
+    # ---------- public sync API ----------
     def connect(self):
-        asyncio.run(self._a_connect())
+        self._ensure_loop()
+        self._run(self._a_connect())
 
     def disconnect(self):
-        asyncio.run(self._a_disconnect())
+        if self._loop is None:
+            return
+        try:
+            self._run(self._a_disconnect())
+        except Exception:
+            pass
+
+    def close(self):
+        """
+        Fully stop the background loop/thread. Call after disconnect().
+        """
+        if self._loop is None:
+            return
+        try:
+            self.disconnect()
+        except Exception:
+            pass
+        try:
+            self._loop.call_soon_threadsafe(self._loop.stop)
+            if self._thread:
+                self._thread.join(timeout=2.0)
+        finally:
+            self._thread = None
+            self._loop = None
 
     def get_bpm(self, default: Optional[float] = None) -> Optional[float]:
-        """
-        Returns rolling-avg BPM or default if nothing received yet.
-        """
         if not self._deque:
             return default
         vals = [v for (_, v) in self._deque]
