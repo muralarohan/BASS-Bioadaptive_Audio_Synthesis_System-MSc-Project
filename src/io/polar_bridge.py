@@ -4,15 +4,21 @@ import asyncio
 import time
 from collections import deque
 from dataclasses import dataclass
-from typing import Optional
+from typing import Optional, Tuple
 from threading import Thread
 
 from bleak import BleakClient, BleakScanner
 
+# Standard Heart Rate Measurement Characteristic
 HR_CHAR_UUID = "00002a37-0000-1000-8000-00805f9b34fb"
 POLAR_DEFAULT_NAME = "Polar Verity Sense"
 
+
 def _parse_hr_measurement(data: bytes) -> Optional[int]:
+    """
+    Parse Bluetooth SIG Heart Rate Measurement value.
+    Returns bpm as int, or None if cannot parse / out of plausible range.
+    """
     if not data:
         return None
     flags = data[0]
@@ -27,13 +33,17 @@ def _parse_hr_measurement(data: bytes) -> Optional[int]:
         bpm = data[1]
     return bpm if 20 <= bpm <= 240 else None
 
+
 @dataclass
 class HRWindow:
-    seconds: float = 10.0  # rolling average window
+    # 30 s window: balances responsiveness with stability (WESAD-style)
+    seconds: float = 30.0
+
 
 class PolarVeritySenseHR:
     """
     Persistent-loop wrapper for Bleak on Windows so HR notifications don't target a closed loop.
+    Maintains a rolling deque of (timestamp, bpm) limited by a time window (default 30 s).
     """
     def __init__(self, device: Optional[str] = None, avg_window: HRWindow = HRWindow()):
         self.device_query = device or POLAR_DEFAULT_NAME
@@ -56,7 +66,6 @@ class PolarVeritySenseHR:
         self._thread.start()
 
     def _run(self, coro):
-        # schedule coroutine on the background loop and wait for its result
         fut = asyncio.run_coroutine_threadsafe(coro, self._loop)
         return fut.result()
 
@@ -79,7 +88,7 @@ class PolarVeritySenseHR:
             return
         now = time.time()
         self._deque.append((now, float(bpm)))
-        # prune old samples
+        # prune outside the window
         cut = now - self.avg_window.seconds
         while self._deque and self._deque[0][0] < cut:
             self._deque.popleft()
@@ -98,7 +107,6 @@ class PolarVeritySenseHR:
     async def _a_disconnect(self):
         if self._client and self._connected:
             try:
-                # Stop notifications before disconnecting to quiesce callbacks
                 await self._client.stop_notify(HR_CHAR_UUID)
             except Exception:
                 pass
@@ -123,9 +131,7 @@ class PolarVeritySenseHR:
             pass
 
     def close(self):
-        """
-        Fully stop the background loop/thread. Call after disconnect().
-        """
+        """Fully stop the background loop/thread. Call after disconnect()."""
         if self._loop is None:
             return
         try:
@@ -140,8 +146,69 @@ class PolarVeritySenseHR:
             self._thread = None
             self._loop = None
 
+    # ---------- data access ----------
+    def sample_count(self) -> int:
+        """How many samples are currently inside the rolling window."""
+        return len(self._deque)
+
+    def window_span(self) -> float:
+        """Seconds covered by the current rolling buffer."""
+        if len(self._deque) < 2:
+            return 0.0
+        return float(self._deque[-1][0] - self._deque[0][0])
+
     def get_bpm(self, default: Optional[float] = None) -> Optional[float]:
+        """
+        Returns rolling-avg BPM over the last `avg_window.seconds`,
+        or `default` if no samples available.
+        """
         if not self._deque:
             return default
         vals = [v for (_, v) in self._deque]
         return float(sum(vals) / max(1, len(vals)))
+
+    def wait_for_samples(
+        self,
+        timeout: float = 8.0,
+        min_count: int = 2,
+        default: Optional[float] = None,
+        poll_interval: float = 0.2,
+    ) -> Tuple[int, float, Optional[float]]:
+        """
+        Block until at least `min_count` samples arrive (within the rolling window),
+        or until `timeout` seconds elapse. Returns (count, elapsed_sec, avg_bpm_or_default).
+        """
+        start = time.time()
+        while True:
+            cnt = self.sample_count()
+            if cnt >= max(1, min_count):
+                break
+            if (time.time() - start) >= max(0.0, timeout):
+                break
+            time.sleep(poll_interval)
+        elapsed = time.time() - start
+        return self.sample_count(), elapsed, self.get_bpm(default=default)
+
+    def wait_for_window(
+        self,
+        seconds: float = 30.0,
+        timeout: float = 45.0,
+        default: Optional[float] = None,
+        poll_interval: float = 0.2,
+    ) -> Tuple[int, float, Optional[float], float]:
+        """
+        Block until the rolling buffer covers at least `seconds` span,
+        or until `timeout` seconds elapse.
+        Returns (count, span_sec, avg_bpm_or_default, elapsed_sec).
+        """
+        start = time.time()
+        target = max(0.0, seconds)
+        while True:
+            span = self.window_span()
+            if span >= target:
+                break
+            if (time.time() - start) >= max(0.0, timeout):
+                break
+            time.sleep(poll_interval)
+        elapsed = time.time() - start
+        return self.sample_count(), self.window_span(), self.get_bpm(default=default), elapsed
