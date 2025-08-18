@@ -11,6 +11,22 @@ BASS is a closed-loop system that listens to your body (via heart rate signals) 
 - **Controller:** 20–30 s segments, 2-clip lookahead buffer, 1.5 s crossfades, neutral fallback.
 - **Evaluation:** Logs audio metrics (RMS, crest, centroid, etc.) and supports listening tests.
 
+# Run/Quickstart Guide (powershell)
+
+# Activate venv first
+.\.venv\Scripts\Activate.ps1
+
+# Live 4-stage session mix
+.\scripts\run_live.ps1
+
+# Quick single renders
+.\scripts\run_base.ps1
+.\scripts\run_neutral.ps1
+.\scripts\run_calm.ps1
+
+**Logs**
+- Outputs saved under outputs/audio
+- Metrics appended to outputs/metrics.csv
 
 
 ## Repository Layout
@@ -28,19 +44,6 @@ bass_project/
 └─ README.md
 
 
-## Quickstart
-
-1. **Environment**
-```powershell
-py -3.11 -m venv .venv
-.\.venv\Scripts\Activate.ps1
-pip install -r requirements.txt
-
-2. **Run a neutral Adapter Test**
-python ui/cli.py --only neutral `
-  --adapter-strength 0.0125 `
-  --keyword "neutral piano arpeggio, slow tempo, no drums, soft reverb" `
-  --duration 6 --highpass 120 --lowpass 10000 --peak 0.90 --seed 4242
 
 3. **Logs**
 - Outputs saved under outputs/audio
@@ -53,7 +56,15 @@ python ui/cli.py --only neutral `
 
 ## Adapters Trained (from DEAM)
 - calm/neutral adapters trained with 200 audios of each category
-- 
+
+
+## Future Work
+
+- **True streaming playback:** fork Audiocraft to expose token/PCM chunks during generation (incremental EnCodec decode + audio device streaming). Requires changes in `MusicGen.generate()` to yield frames and a small audio streamer.  
+- **Real-time GPU pipeline:** enable Triton/xFormers on the GPU build; keep LM on CUDA with AMP/FP16; measure and target render_time < segment_sec with prebuffer ≥ 2.  
+- **Async renderer + player:** background render queue with N-lookahead and a small playback ring buffer; resilient to late renders and device hiccups.  
+- **Adaptive segment sizing:** dynamically shorten/lengthen segment duration based on measured render speed to maintain gapless playback without overloading the GPU.  
+- **Advanced HR fusion:** incorporate HRV/EDA (when available) and Bayesian smoothing over 30–60 s windows for more robust state estimates.
 
 ## Credits
 - META AI MusicGen
