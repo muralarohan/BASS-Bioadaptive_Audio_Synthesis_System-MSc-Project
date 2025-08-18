@@ -13,7 +13,7 @@ if str(ROOT) not in sys.path:
 
 from src.io.polar_bridge import PolarVeritySenseHR
 from src.control.state_mapper import HRStateMapper, HRRules
-from src.control.prompt_selector import load_prompt_bank, get_prompt_for_state
+from src.control.prompt_iso import generate_iso_prompts
 from src.audio.postfx import normalize_peak
 from src.gen.engine import render_one_clip
 
@@ -57,7 +57,7 @@ def _adapter_for_stage(stage: str) -> str:
 def build_parser():
     p = argparse.ArgumentParser(
         prog="BASS Live",
-        description="Live HR-driven generation loop (Polar Verity Sense). Locked 4-stage schedule (energy/neutral/calm)."
+        description="Live HR-driven generation loop (Polar Verity Sense). Locked 4-stage ISO schedule (energy/neutral/calm)."
     )
     p.add_argument("--device", type=str, default="Polar Verity Sense",
                    help="BLE name or address of the Polar device.")
@@ -76,19 +76,16 @@ def build_parser():
 
     # Generation / adapters (stage overrides apply at runtime)
     p.add_argument("--alpha", type=float, default=0.01,
-                   help="Adapter blend alpha (fixed to 0.01 for neutral/calm; energy has no adapter).")
+                   help="Default adapter blend alpha (stage overrides set actual values).")
     p.add_argument("--temperature", type=float, default=0.95)
     p.add_argument("--top-k", type=int, default=150)
     p.add_argument("--top-p", type=float, default=0.95)
     p.add_argument("--cfg", type=float, default=1.6)
-    p.add_argument("--seed", type=int, default=4242)
+    p.add_argument("--seed", type=int, default=4242,
+                   help="Session seed (fixed across segments; prompt variants provide the variety).")
     p.add_argument("--highpass", type=int, default=120)
     p.add_argument("--lowpass", type=int, default=10000)
     p.add_argument("--peak", type=float, default=0.90)
-
-    # Prompt bank
-    p.add_argument("--prompt-json", type=str, default="prompts/emotion_prompt_bank.json")
-    p.add_argument("--prompt-csv", type=str, default="prompts/emotion_prompt_bank.csv")
 
     # Outputs
     p.add_argument("--outputs", type=str, default="outputs/audio")
@@ -96,24 +93,6 @@ def build_parser():
 
     p.add_argument("--log-level", choices=["INFO", "DEBUG"], default="INFO")
     return p
-
-
-def _build_locked_schedule(phys_init: str):
-    """
-    Build the musical stage plan from the initial physiological state.
-    Returns (schedule_id, stages_list) where stages are 'energy'|'neutral'|'calm'.
-    """
-    pi = (phys_init or "").lower()
-    if pi == "stress":
-        stages = ["neutral", "neutral", "calm", "calm"]
-        sid = "stress->N,N,C,C"
-    elif pi == "under":
-        stages = ["energy", "neutral", "neutral", "calm"]
-        sid = "under->E,N,N,C"
-    else:  # treat anything else as neutral
-        stages = ["neutral", "neutral", "calm", "calm"]
-        sid = "neutral->N,N,C,C"
-    return sid, stages
 
 
 # ---- stage-specific generation tweaks ----
@@ -130,12 +109,6 @@ def main(argv=None):
 
     outputs = Path(args.outputs); outputs.mkdir(parents=True, exist_ok=True)
     metrics_csv = Path(args.metrics_csv); metrics_csv.parent.mkdir(parents=True, exist_ok=True)
-    prompt_json = Path(args.prompt_json); prompt_csv = Path(args.prompt_csv)
-
-    # Load prompt bank (must include 'state' entries for energy/neutral/calm)
-    entries = load_prompt_bank(prompt_json, prompt_csv)
-    if not entries:
-        print("[ERROR] Prompt bank appears empty."); sys.exit(2)
 
     # HR mapper thresholds (WESAD-derived). We classify once after 30 s warm-up.
     rules = HRRules(stress_delta_bpm=15, under_delta_bpm=-10, window_sec=30, sustain_sec=30)
@@ -156,17 +129,23 @@ def main(argv=None):
         print(f"[ERROR] Could not connect to Polar device: {e}")
         sys.exit(2)
 
-    # Classify once and lock schedule
+    # Classify once, then build ISO prompt plan (locks a single 'base' and varies texture/fx per segment)
     phys_init = mapper.map_bpm(args.baseline_bpm, hr.get_bpm(default=args.baseline_bpm) or args.baseline_bpm)
-    schedule_id, plan = _build_locked_schedule(phys_init)
-    print(f"[INFO] Initial physiological state: {phys_init}")
-    print(f"[INFO] Locked 4-stage schedule: {schedule_id}")
+    session_prompts = generate_iso_prompts(
+        phys_state=phys_init,
+        session_seed=int(args.seed),
+        segments=int(args.segments),
+    )
 
-    # Live generation loop (sequential CPU, follow locked plan)
+    print(f"[INFO] Initial physiological state: {phys_init}")
+    plan_str = ",".join(p.stage[0].upper() for p in session_prompts)  # e.g., N,N,C,C
+    locked_base = session_prompts[0].base if session_prompts else ""
+    print(f"[INFO] Locked 4-stage schedule: {plan_str}  (base='{locked_base}')")
+
+    # Live generation loop (sequential CPU, follow locked plan; fixed seed across segments)
     stamp = _nowstamp()
     session_mix = None
     mix_sr = None
-    seed = int(args.seed)
     crossfade_samples = None
 
     try:
@@ -176,11 +155,9 @@ def main(argv=None):
             bpm = hr.get_bpm(default=args.baseline_bpm) or args.baseline_bpm
             phys_now = mapper.map_bpm(args.baseline_bpm, bpm)
 
-            # Choose musical stage from locked plan (hold final stage if more than 4 segments)
-            stage = plan[i] if i < len(plan) else plan[-1]
-
-            # Stage-specific prompt and adapter
-            prompt = get_prompt_for_state(entries, stage)["prompt"]
+            # Stage & prompt from ISO generator (deterministic with session seed)
+            stage = session_prompts[i].stage
+            prompt = session_prompts[i].text
             adapter_name = _adapter_for_stage(stage)
 
             # Adapter path resolution
@@ -220,7 +197,7 @@ def main(argv=None):
                 top_k=int(args.top_k),
                 top_p=float(args.top_p),
                 cfg_coef=stage_cfg,
-                seed=int(seed),
+                seed=int(args.seed),                 # FIXED across segments
                 highpass_hz=int(args.highpass),
                 lowpass_hz=stage_lowpass,
                 limiter_drive=1.6,
@@ -229,7 +206,6 @@ def main(argv=None):
                 metrics_csv=str(metrics_csv),
                 log_level=args.log_level,
             )
-            seed += 1
             if not ok:
                 print("[WARN] Segment render returned falsy result; skipping mix step.")
                 continue
