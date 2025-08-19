@@ -21,15 +21,22 @@ Each CSV must have at least the columns:
   base, texture, fx
 
 Logic:
-  • Lock one 'base' phrase once per session (chosen deterministically from the shared base list).
-  • For each segment, pick (texture, fx) from the active stage’s CSV using a segment-seeded RNG.
-  • Apply gentle tempo wording per stage and only soften wording when the stage changes.
+  • Lock one 'base' phrase once per session (chosen with a PROMPT SEED).
+  • Per segment, pick (texture, fx) from the active stage’s CSV using a
+    deterministic RNG and **without replacement** within the session.
+  • Tempo wording is plain per stage: energy=fast, neutral=moderate, calm=slow.
   • Assemble: "{base}, {tempo}, {texture}, {fx}"
-  • Deterministic across runs: Random(session_seed + segment_idx).
+
+Determinism & variability:
+  • Model seed (in live.py) can stay fixed for timbre/behavior stability.
+  • Prompt selection uses a *prompt seed* = mix(session_seed, nonce).
+    - If you don't pass a nonce, we use time.time_ns() so each run differs.
+    - If you want fully reproducible sessions, pass a fixed nonce.
 """
 
 from __future__ import annotations
 import csv
+import time
 from dataclasses import dataclass
 from pathlib import Path
 from random import Random
@@ -45,7 +52,6 @@ CSV_PATHS_DEFAULT: Dict[str, Path] = {
 }
 
 # ---- ISO progression per physiological state (project terms) -----------------
-# We accept "stress" | "neutral" | "under" and map to the 4-stage plan.
 ISO_PLAN: Dict[str, List[str]] = {
     "stress":  ["neutral", "neutral", "calm", "calm"],
     "neutral": ["neutral", "neutral", "calm", "calm"],
@@ -64,7 +70,6 @@ class PromptPiece:
 
     @property
     def text(self) -> str:
-        # Compose final prompt
         parts = [self.base]
         if self.tempo:
             parts.append(self.tempo)
@@ -72,7 +77,6 @@ class PromptPiece:
             parts.append(self.texture)
         if self.fx:
             parts.append(self.fx)
-        # Join with comma+space, avoid double commas/spaces
         return ", ".join([p for p in parts if p and p.strip()])
 
 
@@ -83,7 +87,6 @@ def _load_csv_rows(path: Path) -> List[Dict[str, str]]:
     with path.open("r", newline="", encoding="utf-8-sig") as f:
         reader = csv.DictReader(f)
         rows = [row for row in reader]
-    # Basic column validation
     required = {"base", "texture", "fx"}
     missing = [c for c in required if (rows and c not in rows[0])]
     if missing:
@@ -97,12 +100,7 @@ def _load_all_csvs(csv_paths: Dict[str, Path] | None = None) -> Dict[str, List[D
 
 
 def _shared_bases(rows_by_stage: Dict[str, List[Dict[str, str]]]) -> List[str]:
-    """
-    Assumes the same 'base' list across CSVs (as per plan).
-    If they differ, we take the 'neutral' CSV as source of truth.
-    """
     if "neutral" not in rows_by_stage or not rows_by_stage["neutral"]:
-        # fallback: take the first available non-empty stage
         for st in ("energy", "calm"):
             if rows_by_stage.get(st):
                 return [row.get("base", "").strip() for row in rows_by_stage[st] if row.get("base", "").strip()]
@@ -110,50 +108,74 @@ def _shared_bases(rows_by_stage: Dict[str, List[Dict[str, str]]]) -> List[str]:
     return [row.get("base", "").strip() for row in rows_by_stage["neutral"] if row.get("base", "").strip()]
 
 
-def _pick_locked_base(bases: List[str], session_seed: int) -> str:
+# ---- seed mixing --------------------------------------------------------------
+_MASK64 = (1 << 64) - 1
+
+def _mix_seed(a: int, b: int) -> int:
+    """Deterministic 64-bit mix (no reliance on Python's salted hash)."""
+    x = (a & _MASK64) ^ ((b * 0x9E3779B97F4A7C15) & _MASK64)
+    x ^= (x >> 33)
+    x = (x * 0xff51afd7ed558ccd) & _MASK64
+    x ^= (x >> 33)
+    x = (x * 0xc4ceb9fe1a85ec53) & _MASK64
+    x ^= (x >> 33)
+    return x & _MASK64
+
+
+def _pick_locked_base(bases: List[str], prompt_seed: int) -> str:
     if not bases:
         raise ValueError("No 'base' phrases found in prompt CSVs.")
-    rng = Random(int(session_seed))
+    rng = Random(int(prompt_seed))
     return rng.choice(bases)
 
 
-# ---- Tempo wording (gentle transitions when stage changes) -------------------
+# ---- Tempo wording (plain per stage; no ramps) --------------------------------
 def _tempo_for_stage(stage: str) -> str:
-    # default wording when stage stays the same
     return {"energy": "fast tempo", "neutral": "moderate tempo", "calm": "slow tempo"}[stage]
 
 
-def _tempo_override(curr_stage: str, prev_stage: str | None) -> str:
+# ---- Per-stage no-repeat sampler ---------------------------------------------
+_STAGE_SALT = {"energy": 1, "neutral": 2, "calm": 3}
+
+def _build_stage_orders(rows_by_stage: Dict[str, List[Dict[str, str]]], prompt_seed: int
+                        ) -> Tuple[Dict[str, List[int]], Dict[str, int]]:
     """
-    Apply softer transition wording when stage changes between segments.
+    For each stage, build a shuffled order of row indices using a stage-specific RNG.
+    Returns (orders, cursors) where orders[stage] is a list of indices, and cursors[stage] tracks next position.
     """
-    if prev_stage is None or prev_stage == curr_stage:
-        return _tempo_for_stage(curr_stage)
-
-    # Stage changed → soften directionally
-    if curr_stage == "energy":
-        # coming up from neutral/calm
-        return "slightly faster tempo"
-    if curr_stage == "neutral":
-        if prev_stage == "energy":
-            return "moderately lively"
-        if prev_stage == "calm":
-            return "slightly slower tempo"
-        return "moderate tempo"
-    if curr_stage == "calm":
-        # coming down from energy/neutral
-        return "gradually slowing"
-    return _tempo_for_stage(curr_stage)
+    orders: Dict[str, List[int]] = {}
+    cursors: Dict[str, int] = {}
+    for stage, rows in rows_by_stage.items():
+        n = len(rows)
+        if n == 0:
+            orders[stage] = []
+            cursors[stage] = 0
+            continue
+        rng = Random(_mix_seed(prompt_seed, _STAGE_SALT.get(stage, 0)))
+        idxs = list(range(n))
+        rng.shuffle(idxs)
+        orders[stage] = idxs
+        cursors[stage] = 0
+    return orders, cursors
 
 
-# ---- Per-segment randomized texture/fx (deterministic by seed) ---------------
-def _random_texture_fx(rows: List[Dict[str, str]], rng: Random) -> Tuple[str, str]:
+def _draw_row_for_stage(stage: str, rows_by_stage: Dict[str, List[Dict[str, str]]],
+                        orders: Dict[str, List[int]], cursors: Dict[str, int]) -> Dict[str, str]:
+    rows = rows_by_stage.get(stage, [])
     if not rows:
-        return "", ""
-    pick = rng.choice(rows)
-    texture = (pick.get("texture") or "").strip()
-    fx = (pick.get("fx") or "").strip()
-    return texture, fx
+        return {"texture": "", "fx": ""}
+    order = orders[stage]
+    cur = cursors[stage]
+    if cur >= len(order):
+        # exhausted → reshuffle deterministically by advancing a small LCG step
+        # (keeps reproducibility while avoiding immediate repeats)
+        rng = Random(_mix_seed(sum(order), len(order) * 1103515245 + 12345))
+        rng.shuffle(order)
+        cursors[stage] = 0
+        cur = 0
+    row = rows[order[cur]]
+    cursors[stage] = cur + 1
+    return row
 
 
 # ---- Public API ---------------------------------------------------------------
@@ -163,20 +185,21 @@ def generate_iso_prompts(
     session_seed: int,
     segments: int = 4,
     csv_paths: Dict[str, Path] | None = None,
+    nonce: int | None = None,   # new: mix-in to vary prompts across runs with same session_seed
 ) -> List[PromptPiece]:
     """
     Generate 'segments' prompts following the locked ISO progression for the given
     physiological state ("stress" | "neutral" | "under").
 
-    Determinism:
-      - Locked base chosen with Random(session_seed)
-      - Per-segment texture/fx chosen with Random(session_seed + segment_idx)
+    Seeds:
+      - prompt_seed = mix(session_seed, nonce or time.time_ns())
+      - 'base' chosen with Random(prompt_seed)
+      - per-stage rows sampled without replacement using prompt_seed & stage salt
 
-    Returns a list of PromptPiece objects (with .text property).
+    To reproduce a past session exactly, record & pass the 'nonce' you used.
     """
     phys_key = (phys_state or "").strip().lower()
     if phys_key not in ISO_PLAN:
-        # Accept a couple of synonyms just in case
         if phys_key in {"stressed"}:
             phys_key = "stress"
         elif phys_key in {"under_aroused", "underaroused", "low", "low_energy"}:
@@ -184,27 +207,34 @@ def generate_iso_prompts(
         else:
             phys_key = "neutral"
 
+    # Build prompt seed (decoupled from model seed)
+    if nonce is None:
+        nonce = time.time_ns()
+    prompt_seed = _mix_seed(int(session_seed), int(nonce))
+
     # Load CSVs and pick a locked base
     rows_by_stage = _load_all_csvs(csv_paths)
     bases = _shared_bases(rows_by_stage)
-    locked_base = _pick_locked_base(bases, int(session_seed))
+    locked_base = _pick_locked_base(bases, int(prompt_seed))
+
+    # Per-stage deterministic, no-repeat order
+    orders, cursors = _build_stage_orders(rows_by_stage, int(prompt_seed))
 
     # Build the stage plan
     plan = ISO_PLAN[phys_key]
     if segments > len(plan):
-        # hold the last stage for extra segments
         plan = plan + [plan[-1]] * (segments - len(plan))
     else:
         plan = plan[:segments]
 
     out: List[PromptPiece] = []
-    prev_stage: str | None = None
+    prev_stage: str | None = None  # retained for future use if we reintroduce transition wording
 
     for seg_idx, stage in enumerate(plan):
-        rng = Random(int(session_seed) + seg_idx)
-        rows = rows_by_stage.get(stage, [])
-        texture, fx = _random_texture_fx(rows, rng)
-        tempo = _tempo_override(stage, prev_stage)
+        row = _draw_row_for_stage(stage, rows_by_stage, orders, cursors)
+        texture = (row.get("texture") or "").strip()
+        fx = (row.get("fx") or "").strip()
+        tempo = _tempo_for_stage(stage)
 
         piece = PromptPiece(
             segment=seg_idx,

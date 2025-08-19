@@ -7,7 +7,7 @@ $BaselineBpm = 75
 $Segments = 4
 $SegSec   = 20
 $Xfade    = 1.5
-$Seed     = 4242   # auto-increments per segment
+$Seed     = 4241   # auto-increments per segment
 
 python ui/live.py --device "$Device" `
   --baseline-bpm $BaselineBpm `

@@ -17,6 +17,9 @@ from src.control.prompt_iso import generate_iso_prompts
 from src.audio.postfx import normalize_peak
 from src.gen.engine import render_one_clip
 
+# --- Fixed MusicGen seed for all segments/adapters ---
+MUSICGEN_SEED = 4241
+
 
 def _nowstamp():
     return datetime.now().strftime("%Y%m%d-%H%M%S")
@@ -54,6 +57,17 @@ def _adapter_for_stage(stage: str) -> str:
     return "base"  # energy uses base model
 
 
+def _safe_slug(prompt: str, maxlen: int = 48) -> str:
+    """
+    Safer filename slug from a prompt: keep alnum, space, dash, underscore;
+    replace others with space; collapse whitespace to single dashes.
+    """
+    cleaned = "".join(ch if (ch.isalnum() or ch in "-_ ") else " " for ch in prompt.lower())
+    parts = cleaned.split()
+    slug = "-".join(parts)
+    return slug[:maxlen] if slug else "prompt"
+
+
 def build_parser():
     p = argparse.ArgumentParser(
         prog="BASS Live",
@@ -81,8 +95,11 @@ def build_parser():
     p.add_argument("--top-k", type=int, default=150)
     p.add_argument("--top-p", type=float, default=0.95)
     p.add_argument("--cfg", type=float, default=1.6)
+
+    # NOTE: This --seed controls prompt/session randomness only.
+    # MusicGen model seed is fixed by MUSICGEN_SEED above.
     p.add_argument("--seed", type=int, default=4242,
-                   help="Session seed (fixed across segments; prompt variants provide the variety).")
+                   help="Prompt/session seed (affects prompt selection). Model seed is fixed at 4241.")
     p.add_argument("--highpass", type=int, default=120)
     p.add_argument("--lowpass", type=int, default=10000)
     p.add_argument("--peak", type=float, default=0.90)
@@ -98,9 +115,9 @@ def build_parser():
 # ---- stage-specific generation tweaks ----
 # These override the baseline args per musical stage.
 STAGE_PARAMS = {
-    "energy":  {"lowpass": 12000, "cfg": 1.7, "temperature": 0.95, "alpha": 0.0},   # no adapter
-    "neutral": {"lowpass": 10000, "cfg": 1.6, "temperature": 0.95, "alpha": 0.01},  # neutral adapter @ 0.01
-    "calm":    {"lowpass": 9500,  "cfg": 1.5, "temperature": 0.92, "alpha": 0.01},  # calm adapter @ 0.01
+    "energy":  {"lowpass": 12000, "cfg": 1.7, "temperature": 0.95, "alpha": 0.0},    # no adapter
+    "neutral": {"lowpass": 10000, "cfg": 1.6, "temperature": 0.95, "alpha": 0.01},   # neutral adapter @ 0.01
+    "calm":    {"lowpass": 9500,  "cfg": 1.5, "temperature": 0.92, "alpha": 0.005},  # calm adapter @ 0.005
 }
 
 
@@ -131,18 +148,23 @@ def main(argv=None):
 
     # Classify once, then build ISO prompt plan (locks a single 'base' and varies texture/fx per segment)
     phys_init = mapper.map_bpm(args.baseline_bpm, hr.get_bpm(default=args.baseline_bpm) or args.baseline_bpm)
-    session_prompts = generate_iso_prompts(
-        phys_state=phys_init,
-        session_seed=int(args.seed),
-        segments=int(args.segments),
-    )
+    try:
+        session_prompts = generate_iso_prompts(
+            phys_state=phys_init,
+            session_seed=int(args.seed),           # prompt/session seed (not the model seed)
+            segments=int(args.segments),
+        )
+    except Exception as e:
+        print(f"[ERROR] Prompt ISO generation failed: {e}")
+        sys.exit(2)
 
     print(f"[INFO] Initial physiological state: {phys_init}")
     plan_str = ",".join(p.stage[0].upper() for p in session_prompts)  # e.g., N,N,C,C
     locked_base = session_prompts[0].base if session_prompts else ""
     print(f"[INFO] Locked 4-stage schedule: {plan_str}  (base='{locked_base}')")
+    print(f"[INFO] MusicGen model seed: {MUSICGEN_SEED} (fixed)")
 
-    # Live generation loop (sequential CPU, follow locked plan; fixed seed across segments)
+    # Live generation loop (sequential CPU, follow locked plan; fixed model seed across segments)
     stamp = _nowstamp()
     session_mix = None
     mix_sr = None
@@ -172,10 +194,9 @@ def main(argv=None):
             stage_lowpass = int(sp["lowpass"])
             stage_cfg = float(sp["cfg"])
             stage_temp = float(sp["temperature"])
-            stage_alpha = float(sp["alpha"])  # 0.01 for adapter stages, 0.0 for energy
+            stage_alpha = float(sp["alpha"])  # 0.01 for neutral, 0.005 for calm, 0.0 for energy
 
-            slug = prompt.lower().replace(" ", "-")[:48]
-            # Use stage tag (energy/neutral/calm) in filename for clarity
+            slug = _safe_slug(prompt, maxlen=48)
             out_wav = outputs / f"{stamp}_live_seg{i:02d}_{stage}_{slug}_a{stage_alpha:.4f}.wav"
 
             print(f"\n=== LIVE SEGMENT {i+1}/{total_segments} ===")
@@ -197,7 +218,7 @@ def main(argv=None):
                 top_k=int(args.top_k),
                 top_p=float(args.top_p),
                 cfg_coef=stage_cfg,
-                seed=int(args.seed),                 # FIXED across segments
+                seed=MUSICGEN_SEED,                   # <-- fixed model seed here
                 highpass_hz=int(args.highpass),
                 lowpass_hz=stage_lowpass,
                 limiter_drive=1.6,
