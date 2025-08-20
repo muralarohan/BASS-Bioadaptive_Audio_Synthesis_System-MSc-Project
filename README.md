@@ -1,6 +1,8 @@
-# BASS — Bioadaptive Audio Synthesis System
+# BASS — Bioadaptive Audio Synthesis System (Proof of Concept)
 
 BASS is a closed-loop music generation system that senses physiology (heart rate) and renders adaptive, emotionally congruent music with a text-to-music model. The aim is to support stress reduction, relaxation, or activation through targeted musical states and smooth, gapless transitions.
+
+Note: The project was created in multiple environments, the codes might have minor inconsistencies but the product works)
 
 ---
 
