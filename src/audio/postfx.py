@@ -1,4 +1,3 @@
-# src/audio/postfx.py
 from __future__ import annotations
 import numpy as np
 from scipy.signal import butter, filtfilt
@@ -7,7 +6,6 @@ def _butter_filter(x: np.ndarray, sr: int, cutoff: float, btype: str, order: int
     ny = 0.5 * sr
     wc = np.clip(cutoff / ny, 1e-6, 0.999999)
     b, a = butter(order, wc, btype=btype)
-    # filtfilt for zero-phase
     return filtfilt(b, a, x).astype(np.float32)
 
 def highpass(x: np.ndarray, sr: int, cutoff_hz: int) -> np.ndarray:
@@ -21,7 +19,6 @@ def lowpass(x: np.ndarray, sr: int, cutoff_hz: int) -> np.ndarray:
     return _butter_filter(x, sr, cutoff_hz, btype="lowpass")
 
 def tanh_limiter(x: np.ndarray, drive: float = 1.6) -> np.ndarray:
-    # Soft saturation; robust to outliers
     y = np.tanh(np.clip(drive, 0.1, 10.0) * x)
     return y.astype(np.float32)
 

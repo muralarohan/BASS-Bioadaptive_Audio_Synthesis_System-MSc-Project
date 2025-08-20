@@ -6,7 +6,7 @@ from datetime import datetime
 import numpy as np
 import soundfile as sf
 
-# Ensure project root on sys.path to import src.*
+
 ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
@@ -17,12 +17,10 @@ from src.control.prompt_iso import build_prompt_session, ISO_PLAN
 from src.audio.postfx import normalize_peak
 from src.gen.engine import render_one_clip
 
-# --- Fixed MusicGen seed for all segments/adapters ---
+
 MUSICGEN_SEED = 4241
 
-# --- Adaptive decisions: thresholds ---
-# Fresh HR if newest sample age <= segment length (adjusted below per run)
-# Escalate to CALM if stress persists 2 windows or BPM >= baseline + DELTA
+
 STRESS_ESCALATE_DELTA = 20.0
 STRESS_SUSTAIN_WINDOWS = 2
 
@@ -70,7 +68,7 @@ def build_parser():
     p.add_argument("--baseline-bpm", type=float, required=True,
                    help="Baseline (resting) heart rate in BPM.")
 
-    # Session layout
+    #layout
     p.add_argument("--segments", type=int, default=4,
                    help="How many segments to render (>=4: extra segments will hold the final stage).")
     p.add_argument("--segment-sec", type=int, default=20,
@@ -88,8 +86,7 @@ def build_parser():
     p.add_argument("--top-p", type=float, default=0.95)
     p.add_argument("--cfg", type=float, default=1.6)
 
-    # NOTE: This --seed controls prompt/session randomness only.
-    # MusicGen model seed is fixed by MUSICGEN_SEED above.
+    # NOTE: seed controls prompt/session randomness only.
     p.add_argument("--seed", type=int, default=4242,
                    help="Prompt/session seed (affects prompt selection). Model seed is fixed at 4241.")
     p.add_argument("--highpass", type=int, default=120)
@@ -104,11 +101,11 @@ def build_parser():
     return p
 
 
-# ---- stage-specific generation tweaks ----
+# stage-specific generation tweaks
 STAGE_PARAMS = {
     "energy":  {"lowpass": 12000, "cfg": 1.7, "temperature": 0.95, "alpha": 0.0},      # no adapter
-    "neutral": {"lowpass": 10000, "cfg": 1.6, "temperature": 0.95, "alpha": 0.005},    # neutral adapter @ 0.005
-    "calm":    {"lowpass": 9500,  "cfg": 1.5, "temperature": 0.92, "alpha": 0.005},    # calm adapter @ 0.005
+    "neutral": {"lowpass": 10000, "cfg": 1.6, "temperature": 0.95, "alpha": 0.008},    # neutral adapter 
+    "calm":    {"lowpass": 9500,  "cfg": 1.5, "temperature": 0.92, "alpha": 0.008},    # calm adapter 
 }
 
 
@@ -130,11 +127,11 @@ def main(argv=None):
     outputs = Path(args.outputs); outputs.mkdir(parents=True, exist_ok=True)
     metrics_csv = Path(args.metrics_csv); metrics_csv.parent.mkdir(parents=True, exist_ok=True)
 
-    # HR mapper thresholds (WESAD-derived). We classify once after 30 s warm-up.
+    # HR mapper thresholds classify once after 30 s warm-up.
     rules = HRRules(stress_delta_bpm=15, under_delta_bpm=-10, window_sec=30, sustain_sec=30)
     mapper = HRStateMapper(rules)
 
-    # Connect & strict 30 s warm-up
+    # strict 30 s warm-up
     hr = PolarVeritySenseHR(device=args.device)  # 30 s window inside
     print(f"[INFO] Connecting to {args.device} ...")
     try:
@@ -149,7 +146,7 @@ def main(argv=None):
         print(f"[ERROR] Could not connect to Polar device: {e}")
         sys.exit(2)
 
-    # Initial classification & ISO plan (fallback)
+    #ISO plan (fallback)
     phys_init = mapper.map_bpm(args.baseline_bpm, hr.get_bpm(default=args.baseline_bpm) or args.baseline_bpm)
     iso_plan = _iso_plan_from_phys(phys_init)
     if args.segments > len(iso_plan):
@@ -157,7 +154,7 @@ def main(argv=None):
     else:
         iso_plan = iso_plan[:args.segments]
 
-    # Build a prompt session (locked base + per-stage no-repeat sampling)
+    # Build a prompt session
     try:
         prompt_sess = build_prompt_session(session_seed=int(args.seed))
     except Exception as e:

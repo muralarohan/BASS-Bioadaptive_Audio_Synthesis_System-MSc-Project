@@ -39,7 +39,7 @@ class HRSource(ABC):
         """Optional cleanup."""
         ...
 
-# --- registry ---
+
 _SOURCE_REGISTRY: Dict[str, Type[HRSource]] = {}
 
 def register_source(name: str):

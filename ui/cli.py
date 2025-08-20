@@ -4,13 +4,13 @@ import sys
 from pathlib import Path
 from datetime import datetime
 
-# --- ensure project root on sys.path (so `import src.*` works when running from /ui) ---
+
 ROOT = Path(__file__).resolve().parents[1]  # .../bass_project
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
-# --------------------------------------------------------------------------------------
 
-# --------- small helpers ---------
+
+
 def _safe_load_yaml(path):
     """Load YAML if available; else return {} and print a hint."""
     if path is None:
@@ -37,7 +37,7 @@ def _slugify(text, maxlen=48):
 def _nowstamp():
     return datetime.now().strftime("%Y%m%d-%H%M%S")
 
-# --------- defaults (mirror configs/defaults.yaml) ---------
+
 DEFAULTS = {
     "sampler": {
         "duration_sec": 20,
@@ -95,7 +95,7 @@ DEFAULT_PATHS = {
     }
 }
 
-# --------- CLI ---------
+
 def build_parser():
     p = argparse.ArgumentParser(
         prog="BASS CLI",

@@ -1,4 +1,3 @@
-# src/control/state_mapper.py
 from __future__ import annotations
 from dataclasses import dataclass
 
@@ -6,7 +5,7 @@ from dataclasses import dataclass
 class HRRules:
     stress_delta_bpm: int = 15   # baseline +15 => stress
     under_delta_bpm:  int = -10  # baseline -10 => under
-    # window/sustain are used in streaming mode; single-shot uses thresholds only
+    # window/sustain are used in streaming mode
     window_sec: int = 10
     sustain_sec: int = 30
 

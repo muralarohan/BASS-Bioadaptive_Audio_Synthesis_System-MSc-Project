@@ -1,5 +1,4 @@
-﻿# src/audio/metrics.py
-from __future__ import annotations
+﻿from __future__ import annotations
 import numpy as np
 
 def rms(x: np.ndarray) -> float:

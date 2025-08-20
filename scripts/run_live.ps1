@@ -1,13 +1,13 @@
 # Requires: venv activated and adapters present.
 # Edit these two for your setup:
-$Device = "24:AC:AC:06:E8:39"    # Polar Verity Sense address or name
+$Device = "24:AC:AC:06:E8:39"    # Polar Verity Sense address
 $BaselineBpm = 75
 
-# Session layout
+
 $Segments = 4
 $SegSec   = 20
 $Xfade    = 1.5
-$Seed     = 4241   # auto-increments per segment
+$Seed     = 4241 
 
 python ui/live.py --device "$Device" `
   --baseline-bpm $BaselineBpm `

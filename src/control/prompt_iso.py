@@ -50,9 +50,9 @@ CSV_PATHS_DEFAULT: Dict[str, Path] = {
 
 # ---- ISO progression per physiological state (project terms) -----------------
 ISO_PLAN: Dict[str, List[str]] = {
-    "stress":  ["neutral", "neutral", "calm", "calm"],
+    "stress":  ["energy", "neutral", "calm", "calm"],
     "neutral": ["neutral", "neutral", "calm", "calm"],
-    "under":   ["energy",  "neutral", "neutral", "calm"],
+    "under":   ["neutral",  "energy", "neutral", "calm"],
 }
 
 @dataclass(frozen=True)
@@ -75,7 +75,6 @@ class PromptPiece:
             parts.append(self.fx)
         return ", ".join([p for p in parts if p and p.strip()])
 
-# ---- CSV loading --------------------------------------------------------------
 def _load_csv_rows(path: Path) -> List[Dict[str, str]]:
     if not path.exists():
         raise FileNotFoundError(f"Prompt CSV not found: {path}")
@@ -100,7 +99,6 @@ def _shared_bases(rows_by_stage: Dict[str, List[Dict[str, str]]]) -> List[str]:
         return []
     return [row.get("base", "").strip() for row in rows_by_stage["neutral"] if row.get("base", "").strip()]
 
-# ---- seed mixing --------------------------------------------------------------
 _MASK64 = (1 << 64) - 1
 def _mix_seed(a: int, b: int) -> int:
     """Deterministic 64-bit mix (no reliance on Python's salted hash)."""
@@ -142,7 +140,7 @@ def _draw_row_for_stage(stage: str, rows_by_stage: Dict[str, List[Dict[str, str]
     order = orders[stage]
     cur = cursors[stage]
     if cur >= len(order):
-        # exhausted → reshuffle deterministically by advancing a small LCG step
+
         rng = Random(_mix_seed(sum(order), len(order) * 1103515245 + 12345))
         rng.shuffle(order)
         cursors[stage] = 0
@@ -151,7 +149,7 @@ def _draw_row_for_stage(stage: str, rows_by_stage: Dict[str, List[Dict[str, str]
     cursors[stage] = cur + 1
     return row
 
-# ---- Session object -----------------------------------------------------------
+
 class PromptSession:
     """
     Holds locked base and per-stage, no-repeat texture/fx samplers.
@@ -171,7 +169,7 @@ class PromptSession:
         self.locked_base = self._rng.choice(bases)
 
         self.orders, self.cursors = _build_stage_orders(self.rows_by_stage, int(prompt_seed))
-        self.seg_idx = 0  # incremented when you call next_prompt_for(stage)
+        self.seg_idx = 0  # incremented when you call next_prompt
 
     def next_prompt_for(self, stage: str) -> PromptPiece:
         stage = (stage or "").lower()
@@ -192,7 +190,7 @@ class PromptSession:
         self.seg_idx += 1
         return piece
 
-# ---- Convenience builders -----------------------------------------------------
+
 def build_prompt_session(*, session_seed: int, csv_paths: Dict[str, Path] | None = None,
                          nonce: Optional[int] = None) -> PromptSession:
     return PromptSession(session_seed=session_seed, csv_paths=csv_paths, nonce=nonce)

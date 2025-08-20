@@ -1,4 +1,3 @@
-# Single render: base model (energy), yesterday’s sampler/FX
 $Seed = 4242
 python ui/cli.py --only base `
   --keyword "mellow acoustic guitar, relaxed tempo, soft dynamics" `

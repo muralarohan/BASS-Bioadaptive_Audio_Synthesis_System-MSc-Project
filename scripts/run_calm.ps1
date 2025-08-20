@@ -1,4 +1,3 @@
-# Single render: calm adapter, your preferred combo
 $Seed = 4243
 python ui/cli.py --only calm --adapter-strength 0.005 `
   --keyword "calm ambient pads, slow tempo, no drums, soft reverb" `

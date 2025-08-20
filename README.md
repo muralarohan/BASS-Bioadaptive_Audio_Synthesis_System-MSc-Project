@@ -158,7 +158,7 @@ bass_project/
 ## 7. Known limitations
 - **CPU inference:** MusicGen-small on CPU renders offline; short segments and prebuffering maintain continuity. A GPU build greatly improves turnaround.
 - **BLE stability:** In noisy RF environments, HR samples may drop; ISO fallback guarantees uninterrupted playback.
-- **Prompt reproducibility:** Model timbre is fixed (seed **4241**). Prompt sequences vary per run due to a time-based nonce; an optional CLI nonce can be added for exact replay.
+- **Prompt reproducibility:** Model timbre is fixed (seed **4241**: editable if needed). Prompt sequences vary per run due to a time-based nonce; an optional CLI nonce can be added for exact replay.
 
 ---
 

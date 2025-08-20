@@ -1,5 +1,5 @@
 sampler:
-  duration_sec: 20            # 20–30 for live; 6–8 for tests
+  duration_sec: 20            # 20–30 for live
   temperature: 0.95
   top_k: 150
   top_p: 0.95
@@ -16,11 +16,11 @@ postfx:
 adapters:
   enabled: true
   name: neutral               # neutral | calm | base
-  alpha: 0.0125               # sweet spot 0.01–0.015
+  alpha: 0.005               
 
 realtime:
   segment_sec: 20
-  crossfade_sec: 1.5
+  crossfade_sec: 2
   lookahead_segments: 2
 
 emotion_rules:

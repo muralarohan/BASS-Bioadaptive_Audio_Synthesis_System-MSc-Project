@@ -8,7 +8,7 @@ from threading import Thread
 
 from bleak import BleakClient, BleakScanner
 
-# Standard Heart Rate Measurement Characteristic
+# Heart Rate Measurement Characteristic
 HR_CHAR_UUID = "00002a37-0000-1000-8000-00805f9b34fb"
 POLAR_DEFAULT_NAME = "Polar Verity Sense"
 
@@ -33,7 +33,7 @@ def _parse_hr_measurement(data: bytes) -> Optional[int]:
 
 @dataclass
 class HRWindow:
-    # 30 s window: balances responsiveness with stability (WESAD-style)
+    # 30 s window
     seconds: float = 30.0
 
 class PolarVeritySenseHR:
@@ -53,7 +53,7 @@ class PolarVeritySenseHR:
         self._loop: Optional[asyncio.AbstractEventLoop] = None
         self._thread: Optional[Thread] = None
 
-    # ---------- loop/thread helpers ----------
+
     def _ensure_loop(self):
         if self._loop is not None:
             return
@@ -65,11 +65,11 @@ class PolarVeritySenseHR:
         fut = asyncio.run_coroutine_threadsafe(coro, self._loop)
         return fut.result()
 
-    # ---------- async internals ----------
+    # async internals
     async def _a_find_device(self) -> Optional[str]:
         dq = (self.device_query or "").strip()
         if ":" in dq or dq.count("-") >= 5:
-            return dq  # looks like an address
+            return dq 
         devices = await BleakScanner.discover(timeout=5.0)
         dq_lower = dq.lower()
         for d in devices:
@@ -84,7 +84,6 @@ class PolarVeritySenseHR:
             return
         now = time.time()
         self._deque.append((now, float(bpm)))
-        # prune outside the window
         cut = now - self.avg_window.seconds
         while self._deque and self._deque[0][0] < cut:
             self._deque.popleft()
@@ -113,7 +112,6 @@ class PolarVeritySenseHR:
         self._connected = False
         self._client = None
 
-    # ---------- public sync API ----------
     def connect(self):
         self._ensure_loop()
         self._run(self._a_connect())
@@ -142,7 +140,6 @@ class PolarVeritySenseHR:
             self._thread = None
             self._loop = None
 
-    # ---------- data access ----------
     def sample_count(self) -> int:
         """How many samples are currently inside the rolling window."""
         return len(self._deque)

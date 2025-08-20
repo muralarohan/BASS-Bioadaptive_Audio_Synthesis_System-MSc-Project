@@ -1,4 +1,4 @@
-# src/gen/engine.py
+
 from __future__ import annotations
 from pathlib import Path
 from typing import Optional, Dict, Any
@@ -16,10 +16,10 @@ from src.audio.metrics import compute_all_metrics
 
 _SR_DEFAULT = 32000
 
-# ---- Simple base model cache (CPU) ------------------------------------------
+
 _BASE_CACHE: Dict[str, Any] = {
-    "model": None,      # MusicGen wrapper
-    "pristine": None,   # DEEP CLONE of model.lm.state_dict()
+    "model": None,      
+    "pristine": None,   
     "sr": _SR_DEFAULT,
 }
 
@@ -40,18 +40,16 @@ def _get_base_model() -> tuple[MusicGen, dict, int]:
     global _BASE_CACHE
     if _BASE_CACHE["model"] is None:
         model = MusicGen.get_pretrained("facebook/musicgen-small")
-        # Do NOT call model.to('cpu'): MusicGen wrapper has no `.to`.
-        # If forcing device is ever needed: `model.lm.to("cpu")`.
+
 
         model.set_generation_params(use_sampling=True)  # will override per-call
-        # Cache the PRISTINE LM weights (not wrapper)
+        
         pristine_lm = _deep_clone_state_dict(model.lm.state_dict())
         sr = getattr(model, "sample_rate", _SR_DEFAULT)
         _BASE_CACHE.update({"model": model, "pristine": pristine_lm, "sr": sr})
     return _BASE_CACHE["model"], _BASE_CACHE["pristine"], _BASE_CACHE["sr"]
 
 
-# ---- Public entrypoint (used by CLI) ----------------------------------------
 def render_one_clip(
     *,
     keyword: str,
@@ -72,12 +70,11 @@ def render_one_clip(
     metrics_csv: str,
     log_level: str = "INFO",
 ) -> bool:
-    # ---- Seed for reproducibility
+    # seed for reproducibility
     random.seed(seed)
     np.random.seed(seed)
     torch.manual_seed(seed)
 
-    # ---- Alpha guardrails
     if adapter_name != "base":
         if alpha < 0.0:
             raise ValueError(f"alpha must be >= 0 (got {alpha})")
@@ -86,25 +83,25 @@ def render_one_clip(
         if alpha > 0.02:
             print(f"[WARN] alpha={alpha:.3f} is above recommended range (0.01–0.015). Proceed with caution.")
 
-    # ---- Get base and RESET LM to pristine every render (no compounding)
+   
     model, pristine_lm, sr = _get_base_model()
     model.lm.load_state_dict(pristine_lm, strict=True)  # full reset of LM
 
-    # ---- Optional adapter blend (try model.lm first; fallback to model)
+   
     if adapter_name != "base":
         if not adapter_path:
             raise FileNotFoundError(f"Adapter '{adapter_name}' requested, but adapter_path is empty.")
         scope = "lm"
         matched, _ = apply_adapter_blend(model.lm, adapter_path, alpha)
         if matched == 0:
-            # Some adapters may include 'lm.' in keys → try top level
+            
             scope = "model"
             matched, _ = apply_adapter_blend(model, adapter_path, alpha)
         print(f"keys matched and blended: {matched} (scope={scope})")
         if matched == 0:
             raise RuntimeError("Adapter apply resulted in matched=0 — incompatible or wrong base/config.")
 
-    # ---- Set generation params
+
     model.set_generation_params(
         use_sampling=True,
         duration=duration_sec,
@@ -114,16 +111,13 @@ def render_one_clip(
         cfg_coef=cfg_coef,
     )
 
-    # ---- Generate audio
-    # Returns list of tensors, shape [1, T] or [T]; use first item and flatten
+
     wavs = model.generate([keyword], progress=False)
     wav = wavs[0].detach().cpu().numpy().astype(np.float32)
     if wav.ndim == 2:
         wav = wav[0]
-    # Safety: clip any stray NaNs/Infs
     wav = np.nan_to_num(wav, nan=0.0, posinf=0.0, neginf=0.0)
 
-    # ---- Post-FX chain: HPF -> optional LPF -> tanh limiter -> normalize to peak_target
     if highpass_hz and highpass_hz > 0:
         wav = highpass(wav, sr, highpass_hz)
     if lowpass_hz and lowpass_hz > 0:
@@ -131,14 +125,12 @@ def render_one_clip(
     wav = tanh_limiter(wav, drive=limiter_drive)
     wav = normalize_peak(wav, target=peak_target)
 
-    # ---- Save WAV
+
     out_path = Path(out_wav)
     out_path.parent.mkdir(parents=True, exist_ok=True)
     _write_wav(out_path, wav, sr)
 
-    # ---- Metrics
     m = compute_all_metrics(wav, sr)
-    # Augment with run metadata
     row = {
         "adapter": adapter_name,
         "alpha": float(alpha if adapter_name != "base" else 0.0),

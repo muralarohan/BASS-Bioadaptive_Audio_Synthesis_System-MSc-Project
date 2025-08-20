@@ -1,4 +1,3 @@
-# src/adapters/blend.py
 from __future__ import annotations
 from pathlib import Path
 from typing import Tuple
@@ -23,12 +22,12 @@ def blend_state_dicts_(base_sd: dict, adapter_sd: dict, alpha: float) -> int:
             continue
         if w_base.shape != w_ad.shape:
             continue
-        # Ensure same device/dtype
+       
         if w_ad.dtype != w_base.dtype:
             w_ad = w_ad.to(dtype=w_base.dtype)
         if w_ad.device != w_base.device:
             w_ad = w_ad.to(device=w_base.device)
-        # Blend in place
+        
         w_base.mul_(1.0 - alpha).add_(w_ad, alpha=alpha)
         matched += 1
     return matched
@@ -42,7 +41,7 @@ def load_adapter_state(adapter_path: str | Path, map_location: str | torch.devic
     if not p.exists():
         raise FileNotFoundError(f"Adapter weights not found: {p}")
     sd = torch.load(str(p), map_location=map_location)
-    # Some checkpoints store {"state_dict": {...}}
+    #checkpoints store
     if isinstance(sd, dict) and "state_dict" in sd and isinstance(sd["state_dict"], dict):
         sd = sd["state_dict"]
     if not isinstance(sd, dict):
@@ -57,6 +56,6 @@ def apply_adapter_blend(model: torch.nn.Module, adapter_path: str | Path, alpha:
     adapter_sd = load_adapter_state(adapter_path, map_location="cpu")
     base_sd = model.state_dict()
     matched = blend_state_dicts_(base_sd, adapter_sd, alpha)
-    # strict=False to avoid unexpected buffers
+    
     model.load_state_dict(base_sd, strict=False)
     return matched, model
