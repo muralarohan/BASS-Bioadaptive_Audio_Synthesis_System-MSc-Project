@@ -77,7 +77,7 @@ Polar Verity Sense HR → HR state mapping (stress / neutral / under)
 
 ```powershell
 # 1) Create & activate a venv
-cd "E:\BASS MSc Projectass_project"
+cd "your directory"
 python -m venv .venv
 . .\.venv\Scripts\Activate.ps1
 
