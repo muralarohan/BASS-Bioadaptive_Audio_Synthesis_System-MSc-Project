@@ -13,12 +13,18 @@ if str(ROOT) not in sys.path:
 
 from src.io.polar_bridge import PolarVeritySenseHR
 from src.control.state_mapper import HRStateMapper, HRRules
-from src.control.prompt_iso import generate_iso_prompts
+from src.control.prompt_iso import build_prompt_session, ISO_PLAN
 from src.audio.postfx import normalize_peak
 from src.gen.engine import render_one_clip
 
 # --- Fixed MusicGen seed for all segments/adapters ---
 MUSICGEN_SEED = 4241
+
+# --- Adaptive decisions: thresholds ---
+# Fresh HR if newest sample age <= segment length (adjusted below per run)
+# Escalate to CALM if stress persists 2 windows or BPM >= baseline + DELTA
+STRESS_ESCALATE_DELTA = 20.0
+STRESS_SUSTAIN_WINDOWS = 2
 
 
 def _nowstamp():
@@ -26,10 +32,6 @@ def _nowstamp():
 
 
 def _equal_power_xfade(a: np.ndarray, b: np.ndarray, overlap: int) -> np.ndarray:
-    """
-    Equal-power crossfade: last 'overlap' samples of a with first 'overlap' of b.
-    Assumes both are 1-D float32 arrays at the same sample rate.
-    """
     if overlap <= 0 or len(a) == 0:
         return np.concatenate([a, b]).astype(np.float32)
     overlap = min(overlap, len(a), len(b))
@@ -43,12 +45,6 @@ def _equal_power_xfade(a: np.ndarray, b: np.ndarray, overlap: int) -> np.ndarray
 
 
 def _adapter_for_stage(stage: str) -> str:
-    """
-    Map musical stage to adapter name expected by render_one_clip:
-      - 'energy'  -> base (no adapter)
-      - 'neutral' -> neutral adapter
-      - 'calm'    -> calm adapter
-    """
     s = (stage or "").lower()
     if s == "neutral":
         return "neutral"
@@ -58,10 +54,6 @@ def _adapter_for_stage(stage: str) -> str:
 
 
 def _safe_slug(prompt: str, maxlen: int = 48) -> str:
-    """
-    Safer filename slug from a prompt: keep alnum, space, dash, underscore;
-    replace others with space; collapse whitespace to single dashes.
-    """
     cleaned = "".join(ch if (ch.isalnum() or ch in "-_ ") else " " for ch in prompt.lower())
     parts = cleaned.split()
     slug = "-".join(parts)
@@ -71,7 +63,7 @@ def _safe_slug(prompt: str, maxlen: int = 48) -> str:
 def build_parser():
     p = argparse.ArgumentParser(
         prog="BASS Live",
-        description="Live HR-driven generation loop (Polar Verity Sense). Locked 4-stage ISO schedule (energy/neutral/calm)."
+        description="Live HR-driven generation loop (Polar Verity Sense). Adaptive (TARGETED) with ISO fallback."
     )
     p.add_argument("--device", type=str, default="Polar Verity Sense",
                    help="BLE name or address of the Polar device.")
@@ -113,12 +105,23 @@ def build_parser():
 
 
 # ---- stage-specific generation tweaks ----
-# These override the baseline args per musical stage.
 STAGE_PARAMS = {
     "energy":  {"lowpass": 12000, "cfg": 1.7, "temperature": 0.95, "alpha": 0.0},    # no adapter
     "neutral": {"lowpass": 10000, "cfg": 1.6, "temperature": 0.95, "alpha": 0.01},   # neutral adapter @ 0.01
     "calm":    {"lowpass": 9500,  "cfg": 1.5, "temperature": 0.92, "alpha": 0.005},  # calm adapter @ 0.005
 }
+
+
+def _iso_plan_from_phys(phys_init: str) -> list[str]:
+    key = (phys_init or "").lower()
+    if key not in ISO_PLAN:
+        if key == "stressed":
+            key = "stress"
+        elif key in {"under_aroused", "underaroused", "low", "low_energy"}:
+            key = "under"
+        else:
+            key = "neutral"
+    return ISO_PLAN[key]
 
 
 def main(argv=None):
@@ -146,25 +149,30 @@ def main(argv=None):
         print(f"[ERROR] Could not connect to Polar device: {e}")
         sys.exit(2)
 
-    # Classify once, then build ISO prompt plan (locks a single 'base' and varies texture/fx per segment)
+    # Initial classification & ISO plan (fallback)
     phys_init = mapper.map_bpm(args.baseline_bpm, hr.get_bpm(default=args.baseline_bpm) or args.baseline_bpm)
+    iso_plan = _iso_plan_from_phys(phys_init)
+    if args.segments > len(iso_plan):
+        iso_plan = iso_plan + [iso_plan[-1]] * (args.segments - len(iso_plan))
+    else:
+        iso_plan = iso_plan[:args.segments]
+
+    # Build a prompt session (locked base + per-stage no-repeat sampling)
     try:
-        session_prompts = generate_iso_prompts(
-            phys_state=phys_init,
-            session_seed=int(args.seed),           # prompt/session seed (not the model seed)
-            segments=int(args.segments),
-        )
+        prompt_sess = build_prompt_session(session_seed=int(args.seed))
     except Exception as e:
-        print(f"[ERROR] Prompt ISO generation failed: {e}")
+        print(f"[ERROR] Prompt session build failed: {e}")
         sys.exit(2)
 
+    plan_str = ",".join(s[0].upper() for s in iso_plan)  # e.g., N,N,C,C
     print(f"[INFO] Initial physiological state: {phys_init}")
-    plan_str = ",".join(p.stage[0].upper() for p in session_prompts)  # e.g., N,N,C,C
-    locked_base = session_prompts[0].base if session_prompts else ""
-    print(f"[INFO] Locked 4-stage schedule: {plan_str}  (base='{locked_base}')")
+    print(f"[INFO] Locked 4-stage ISO fallback: {plan_str}  (base='{prompt_sess.locked_base}')")
     print(f"[INFO] MusicGen model seed: {MUSICGEN_SEED} (fixed)")
 
-    # Live generation loop (sequential CPU, follow locked plan; fixed model seed across segments)
+    # Adaptive counters
+    stress_windows = 0
+
+    # Live generation loop (sequential CPU)
     stamp = _nowstamp()
     session_mix = None
     mix_sr = None
@@ -172,14 +180,46 @@ def main(argv=None):
 
     try:
         total_segments = int(args.segments)
-        for i in range(total_segments):
-            # Rolling 30 s avg shown for logging only
-            bpm = hr.get_bpm(default=args.baseline_bpm) or args.baseline_bpm
-            phys_now = mapper.map_bpm(args.baseline_bpm, bpm)
 
-            # Stage & prompt from ISO generator (deterministic with session seed)
-            stage = session_prompts[i].stage
-            prompt = session_prompts[i].text
+        # Robust freshness thresholds
+        freshness_threshold = max(2.0, float(args.segment_sec) * 0.75)  # allow brief gaps
+        min_span = max(10.0, rules.window_sec * 0.5)                    # half-window suffices
+
+        for i in range(total_segments):
+            # HR snapshot
+            avg_bpm = hr.get_bpm(default=args.baseline_bpm) or args.baseline_bpm
+            phys_now = mapper.map_bpm(args.baseline_bpm, avg_bpm)
+            age = hr.last_sample_age_sec()
+            span = hr.window_span()
+
+            # Decide mode
+            is_fresh = (age is not None) and (age <= freshness_threshold) and (span >= min_span)
+            if is_fresh:
+                # TARGETED: complementary mapping + escalation for sustained stress
+                mode = "TARGETED"
+                if phys_now == "stress":
+                    stress_windows += 1
+                    if stress_windows >= STRESS_SUSTAIN_WINDOWS or (avg_bpm >= args.baseline_bpm + STRESS_ESCALATE_DELTA):
+                        stage = "calm"
+                    else:
+                        stage = "neutral"
+                elif phys_now == "under":
+                    stress_windows = 0
+                    stage = "energy"
+                else:  # neutral
+                    stress_windows = 0
+                    stage = "neutral"
+            else:
+                # ISO FALLBACK
+                mode = "ISO_FALLBACK"
+                stage = iso_plan[i] if i < len(iso_plan) else iso_plan[-1]
+                # reset sustained counters slowly (optional)
+                if phys_now != "stress":
+                    stress_windows = 0
+
+            # Prompt for the chosen stage
+            piece = prompt_sess.next_prompt_for(stage)
+            prompt = piece.text
             adapter_name = _adapter_for_stage(stage)
 
             # Adapter path resolution
@@ -194,14 +234,16 @@ def main(argv=None):
             stage_lowpass = int(sp["lowpass"])
             stage_cfg = float(sp["cfg"])
             stage_temp = float(sp["temperature"])
-            stage_alpha = float(sp["alpha"])  # 0.01 for neutral, 0.005 for calm, 0.0 for energy
+            stage_alpha = float(sp["alpha"])  # 0.01 neutral, 0.005 calm, 0.0 energy
 
             slug = _safe_slug(prompt, maxlen=48)
             out_wav = outputs / f"{stamp}_live_seg{i:02d}_{stage}_{slug}_a{stage_alpha:.4f}.wav"
 
+            age_txt = f"{age:.1f}s" if age is not None else "None"
             print(f"\n=== LIVE SEGMENT {i+1}/{total_segments} ===")
-            print(f"HR avg bpm  : {bpm:.1f}  (baseline {args.baseline_bpm:.1f}) "
-                  f"phys_now={phys_now} | phys_init={phys_init} | stage={stage.upper()}")
+            print(f"HR avg bpm  : {avg_bpm:.1f}  (baseline {args.baseline_bpm:.1f}) "
+                  f"phys_now={phys_now} | mode={mode} | last_age={age_txt} | span={span:.1f}s")
+            print(f"Stage       : {stage.upper()}  (stress_windows={stress_windows})")
             print(f"Adapter     : {adapter_name}  alpha={stage_alpha}")
             print(f"Sampler     : temp={stage_temp} top_k={args.top_k} top_p={args.top_p} cfg={stage_cfg}")
             print(f"Filters     : HPF={args.highpass}Hz LPF={stage_lowpass}Hz peak={args.peak}")
@@ -210,7 +252,7 @@ def main(argv=None):
 
             ok = render_one_clip(
                 keyword=prompt,
-                adapter_name=adapter_name,           # base for energy; neutral/calm otherwise
+                adapter_name=adapter_name,
                 adapter_path=adapter_path,
                 alpha=stage_alpha,
                 duration_sec=int(args.segment_sec),
@@ -218,7 +260,7 @@ def main(argv=None):
                 top_k=int(args.top_k),
                 top_p=float(args.top_p),
                 cfg_coef=stage_cfg,
-                seed=MUSICGEN_SEED,                   # <-- fixed model seed here
+                seed=MUSICGEN_SEED,                   # fixed model seed
                 highpass_hz=int(args.highpass),
                 lowpass_hz=stage_lowpass,
                 limiter_drive=1.6,

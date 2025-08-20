@@ -1,4 +1,3 @@
-# src/io/polar_bridge.py
 from __future__ import annotations
 import asyncio
 import time
@@ -12,7 +11,6 @@ from bleak import BleakClient, BleakScanner
 # Standard Heart Rate Measurement Characteristic
 HR_CHAR_UUID = "00002a37-0000-1000-8000-00805f9b34fb"
 POLAR_DEFAULT_NAME = "Polar Verity Sense"
-
 
 def _parse_hr_measurement(data: bytes) -> Optional[int]:
     """
@@ -33,12 +31,10 @@ def _parse_hr_measurement(data: bytes) -> Optional[int]:
         bpm = data[1]
     return bpm if 20 <= bpm <= 240 else None
 
-
 @dataclass
 class HRWindow:
     # 30 s window: balances responsiveness with stability (WESAD-style)
     seconds: float = 30.0
-
 
 class PolarVeritySenseHR:
     """
@@ -156,6 +152,12 @@ class PolarVeritySenseHR:
         if len(self._deque) < 2:
             return 0.0
         return float(self._deque[-1][0] - self._deque[0][0])
+
+    def last_sample_age_sec(self) -> Optional[float]:
+        """Age in seconds of the newest HR sample; None if no samples yet."""
+        if not self._deque:
+            return None
+        return float(time.time() - self._deque[-1][0])
 
     def get_bpm(self, default: Optional[float] = None) -> Optional[float]:
         """
