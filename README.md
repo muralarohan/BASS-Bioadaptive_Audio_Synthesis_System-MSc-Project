@@ -71,3 +71,8 @@ bass_project/
 - WESAD dataset - HR calibration
 - DEAM dataset - Adapter training
 - Polar Verity Sense - biometric Input
+
+python ui\live.py --device "24:AC:AC:06:E8:39" `
+>>   --baseline-bpm 75 `                                
+>>   --segments 4 --segment-sec 20 --crossfade-sec 2 `
+>>   --log-level INFO

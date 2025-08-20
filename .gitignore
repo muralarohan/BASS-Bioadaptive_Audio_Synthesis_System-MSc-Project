@@ -4,20 +4,24 @@ __pycache__/
 .venv/
 venv/
 .env
+.pytest_cache/
 
 # IDE
 .vscode/
 .idea/
 
-# Outputs & artifacts
-outputs/
+# Outputs & artifacts (targeted)
+outputs/audio/
+outputs/logs/
 *.wav
 *.mp3
 *.flac
 *.m4a
 *.ogg
 *.csv
-logs/
+# (keep metrics.csv and any other CSVs you need)
+# DO NOT: *.csv
+
 wandb/
 .cache/
 .checkpoints/
