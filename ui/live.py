@@ -81,8 +81,8 @@ def build_parser():
                    help="Planned look-ahead segments (sequential in CPU mode).")
 
     # Generation / adapters (stage overrides apply at runtime)
-    p.add_argument("--alpha", type=float, default=0.01,
-                   help="Default adapter blend alpha (stage overrides set actual values).")
+    p.add_argument("--alpha", type=float, default=0.005,
+                   help="Default adapter blend alpha (stage overrides: neutral=0.005, calm=0.005).")
     p.add_argument("--temperature", type=float, default=0.95)
     p.add_argument("--top-k", type=int, default=150)
     p.add_argument("--top-p", type=float, default=0.95)
@@ -106,9 +106,9 @@ def build_parser():
 
 # ---- stage-specific generation tweaks ----
 STAGE_PARAMS = {
-    "energy":  {"lowpass": 12000, "cfg": 1.7, "temperature": 0.95, "alpha": 0.0},    # no adapter
-    "neutral": {"lowpass": 10000, "cfg": 1.6, "temperature": 0.95, "alpha": 0.01},   # neutral adapter @ 0.01
-    "calm":    {"lowpass": 9500,  "cfg": 1.5, "temperature": 0.92, "alpha": 0.005},  # calm adapter @ 0.005
+    "energy":  {"lowpass": 12000, "cfg": 1.7, "temperature": 0.95, "alpha": 0.0},      # no adapter
+    "neutral": {"lowpass": 10000, "cfg": 1.6, "temperature": 0.95, "alpha": 0.005},    # neutral adapter @ 0.005
+    "calm":    {"lowpass": 9500,  "cfg": 1.5, "temperature": 0.92, "alpha": 0.005},    # calm adapter @ 0.005
 }
 
 
@@ -181,9 +181,9 @@ def main(argv=None):
     try:
         total_segments = int(args.segments)
 
-        # Robust freshness thresholds
-        freshness_threshold = max(2.0, float(args.segment_sec) * 0.75)  # allow brief gaps
-        min_span = max(10.0, rules.window_sec * 0.5)                    # half-window suffices
+        # Freshness thresholds for HR data
+        freshness_threshold = max(2.0, float(args.segment_sec) * 0.75)
+        min_span = max(10.0, rules.window_sec * 0.5)
 
         for i in range(total_segments):
             # HR snapshot
@@ -213,7 +213,6 @@ def main(argv=None):
                 # ISO FALLBACK
                 mode = "ISO_FALLBACK"
                 stage = iso_plan[i] if i < len(iso_plan) else iso_plan[-1]
-                # reset sustained counters slowly (optional)
                 if phys_now != "stress":
                     stress_windows = 0
 
@@ -234,7 +233,7 @@ def main(argv=None):
             stage_lowpass = int(sp["lowpass"])
             stage_cfg = float(sp["cfg"])
             stage_temp = float(sp["temperature"])
-            stage_alpha = float(sp["alpha"])  # 0.01 neutral, 0.005 calm, 0.0 energy
+            stage_alpha = float(sp["alpha"])  # 0.005 for neutral/calm, 0.0 for energy
 
             slug = _safe_slug(prompt, maxlen=48)
             out_wav = outputs / f"{stamp}_live_seg{i:02d}_{stage}_{slug}_a{stage_alpha:.4f}.wav"
