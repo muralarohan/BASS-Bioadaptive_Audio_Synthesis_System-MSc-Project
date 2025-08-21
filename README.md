@@ -38,9 +38,9 @@ Polar Verity Sense HR → HR state mapping (stress / neutral / under)
 ### 2.2 Stage selection (adaptive + ISO fallback)
 
 **ISO plan from first 30 s warm-up:**
-- Stress → `[neutral, neutral, calm, calm]`
+- Stress → `[energy, neutral, calm, calm]`
 - Neutral → `[neutral, neutral, calm, calm]`
-- Under → `[energy, neutral, neutral, calm]`
+- Under → `[calm, neutral, calm, calm]`
 
 **During playback (per segment):**
 - If HR is **fresh** (newest sample age ≤ segment duration **and** window span ≥ 30 s):

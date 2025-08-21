@@ -17,7 +17,7 @@ Input CSVs (under prompts/):
   - calm_prompts.csv
 
 Each CSV must have at least the columns:
-  base, texture, fx
+  base, tempo, texture, fx
 
 Logic (session API):
   • Lock one 'base' phrase once per session (chosen with a PROMPT SEED).
@@ -40,7 +40,7 @@ from pathlib import Path
 from random import Random
 from typing import Dict, List, Tuple, Optional
 
-# ---- default CSV locations (relative to repo root) ---------------------------
+# default CSV locations (relative to repo root)
 PROMPTS_DIR = Path("prompts")
 CSV_PATHS_DEFAULT: Dict[str, Path] = {
     "energy": PROMPTS_DIR / "energy_prompts.csv",
@@ -48,11 +48,11 @@ CSV_PATHS_DEFAULT: Dict[str, Path] = {
     "calm": PROMPTS_DIR / "calm_prompts.csv",
 }
 
-# ---- ISO progression per physiological state (project terms) -----------------
+#ISO progression per physiological state (project terms)
 ISO_PLAN: Dict[str, List[str]] = {
     "stress":  ["energy", "neutral", "calm", "calm"],
     "neutral": ["neutral", "neutral", "calm", "calm"],
-    "under":   ["neutral",  "energy", "neutral", "calm"],
+    "under":   ["calm",  "neutral", "calm", "calm"],
 }
 
 @dataclass(frozen=True)

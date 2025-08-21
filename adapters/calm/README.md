@@ -7,7 +7,7 @@
   \( W = (1–α)·W_base + α·W_adapter \)
 - **α sweet spot:** 0.010–0.015 (start 0.0125)
 - **Compatibility:** must match musicgen-small config; use blend loader (not `strict=True`)
-- **Checksum (SHA256):** `<fill after adding file>`
+- **Checksum (SHA256):** 
 
 ## Loader sanity check
 - Loader should log: `keys matched and blended` (matched > 0).  
