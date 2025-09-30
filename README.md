@@ -198,3 +198,6 @@ bass_project/
 - **Bright / HF artifacts:** Confirm HPF/LPF are applied; adjust stage LPFs (energy **12 k**, neutral **10 k**, calm **9.5 k**) or raise HPF slightly for your monitoring chain.
 
 **Implementation reflects:** fixed MusicGen seed (**4241**); adaptive targeted control with ISO fallback; fixed tempo wording; per-stage no-repeat prompt sampling; adapter blends α(neutral)=**0.005** and α(calm)=**0.005**.
+
+
+© 2025 Rohan Naveen Murala — All rights reserved. No redistribution or reuse.
